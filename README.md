@@ -1,5 +1,5 @@
-#Script-Instagram-User-Bot
-Purpose of the Script
+Script-Instagram-User-Bot
+#Purpose of the Script
 The purpose of this script is very simple: it is used to identify spammer accounts among the followers of an Instagram profile. It uses the Selenium library to automate the process of logging in, navigating, and analyzing follower profiles.
 
 Instructions
