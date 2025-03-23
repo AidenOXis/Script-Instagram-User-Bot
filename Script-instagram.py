@@ -1,185 +1,181 @@
 import os
 import time
+import random
+import logging
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 import chromedriver_autoinstaller
 
-# Set Instagram credentials
-username = os.environ.get('INSTAGRAM_USERNAME', 'Your Instagram username')
-password = os.environ.get('INSTAGRAM_PASSWORD', 'Your Instagram password')
+# Configurazione logging
+logging.basicConfig(filename='bot_detector.log', level=logging.INFO, 
+                    format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Configure ChromeDriver
-chromedriver_autoinstaller.install()  # Automatically install the correct chromedriver
-options = Options()
-options.add_argument('--no-sandbox')
-options.add_argument('--disable-dev-shm-usage')
-options.add_argument('--disable-notifications')
-options.add_argument('--disable-popup-blocking')
-options.add_argument('--disable-infobars')
-options.add_argument('--start-maximized')  # Maximize the window
+# Credenziali (migliorare con vault se necessario)
+username = os.getenv('INSTAGRAM_USERNAME') or input("Inserisci username Instagram: ")
+password = os.getenv('INSTAGRAM_PASSWORD') or input("Inserisci password Instagram: ")
 
-# Function to log in to Instagram via Selenium
-def login_to_instagram(driver, username, password):
-    print("Navigating to Instagram login page...")
-    driver.get('https://www.instagram.com/accounts/login/')
+# Configurazione Chrome con User-Agent casuale
+def setup_driver(proxy=None):
+    chromedriver_autoinstaller.install()
+    options = Options()
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--disable-notifications')
+    options.add_argument('--disable-blink-features=AutomationControlled')
+    options.add_argument(f'--user-agent={random.choice(USER_AGENTS)}')
+    
+    if proxy:
+        options.add_argument(f'--proxy-server={proxy}')
+    
+    return webdriver.Chrome(options=options)
+
+# User-Agents casuali per evitare il rilevamento
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15",
+    # Aggiungi altri User-Agent validi
+]
+
+def login_to_instagram(driver):
     try:
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.NAME, "username"))).send_keys(username)
+        driver.get('https://www.instagram.com/accounts/login/')
+        
+        # Inserimento credenziali
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.NAME, "username"))
+        ).send_keys(username)
         driver.find_element(By.NAME, "password").send_keys(password)
         driver.find_element(By.NAME, "password").send_keys(Keys.RETURN)
-    except TimeoutException as e:
-        print(f"Error during login: TimeoutException {e}")
-        return False
-    except Exception as e:
-        print(f"Error during login: {e}")
-        return False
-    time.sleep(5)
-
-    # Verify if the login was successful
-    try:
-        driver.find_element(By.XPATH, "//div[text()='The username you entered doesn't belong to an account. Please check your username and try again.']")
-        print("Error: Invalid username")
-        return False
-    except:
-        pass
-
-    try:
-        driver.find_element(By.XPATH, "//div[text()='Sorry, your password was incorrect. Please double-check your password.']")
-        print("Error: Invalid password")
-        return False
-    except:
-        pass
-
-    print("Login successful!")
-    return True
-
-# Function to navigate to an Instagram profile
-def go_to_profile(driver, username):
-    print(f"Navigating to {username}'s profile...")
-    driver.get(f'https://www.instagram.com/{username}/')
-
-# Function to click on followers
-def click_on_followers(driver):
-    print("Clicking on followers...")
-    try:
-        followers_link = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, "follower"))
+        
+        # Gestione 2FA manuale
+        if "two_factor" in driver.current_url:
+            input("Completa il 2FA sul browser, poi premi Invio qui.")
+        
+        # Verifica login avvenuto
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.XPATH, "//a[contains(@href, '/accounts/logout/')]"))
         )
-        followers_link.click()
-    except TimeoutException as e:
-        print(f"Error clicking on followers: TimeoutException {e}")
-    except Exception as e:
-        print(f"Error clicking on followers: {e}")
+        logging.info("Login riuscito")
+        return True
 
-# Function to scroll to load all followers
-def scroll_to_load_followers(driver):
-    print("Scrolling to load all followers...")
+    except Exception as e:
+        logging.error(f"Errore durante il login: {str(e)}")
+        return False
+
+def scroll_followers_list(driver):
+    """Scorri la lista dei follower dinamicamente"""
     try:
-        fBody = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.XPATH, "//div[@class='isgrP']"))
+        dialog = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.XPATH, "//div[@role='dialog']"))
         )
-        scroll = 0
-        while scroll < 5:  # Increase this value to scroll longer
-            driver.execute_script('arguments[0].scrollTop = arguments[0].scrollTop + arguments[0].offsetHeight;', fBody)
-            time.sleep(2)
-            scroll += 1
-    except TimeoutException as e:
-        print(f"Error scrolling through followers: TimeoutException {e}")
+        
+        last_height = 0
+        retry_count = 0
+        
+        while retry_count < 3:
+            # Scorri fino in fondo
+            driver.execute_script('arguments[0].scrollTop = arguments[0].scrollHeight', dialog)
+            time.sleep(random.uniform(1.5, 2.5))
+            
+            # Verifica se ci sono nuovi elementi
+            new_height = driver.execute_script("return arguments[0].scrollHeight", dialog)
+            
+            if new_height == last_height:
+                retry_count += 1
+            else:
+                retry_count = 0
+                
+            last_height = new_height
+            
+        logging.info("Lista follower caricata completamente")
     except Exception as e:
-        print(f"Error scrolling through followers: {e}")
+        logging.warning(f"Errore durante lo scrolling: {str(e)}")
 
-# Function to extract followers' links
-def extract_followers_links(driver):
-    print("Extracting followers' links...")
+def analyze_profile(driver, profile_url):
+    """Analisi avanzata del profilo"""
     try:
-        followers_elems = driver.find_elements(By.XPATH, "//a[@class='FPmhX notranslate _0imsa ']")
-        followers = [elem.get_attribute('href') for elem in followers_elems]
-        return followers
+        driver.get(profile_url)
+        time.sleep(random.uniform(2, 4))
+        
+        # Controllo account privato
+        if check_private_account(driver):
+            return None
+            
+        # Raccolta dati
+        username = profile_url.split("/")[-2]
+        bio = get_bio(driver)
+        followers, following, posts = get_counts(driver)
+        
+        # Euristiche avanzate
+        if (posts == 0 or 
+            following > 5 * followers or 
+            "buy" in bio.lower() or
+            "spam" in username.lower() or
+            "bot" in username.lower()):
+            return username
+            
+        return None
     except Exception as e:
-        print(f"Error extracting followers' links: {e}")
-        return []
+        logging.error(f"Errore analizzando {profile_url}: {str(e)}")
+        return None
 
-# Function to identify spammers
-def identify_spammers(driver, followers):
-    print("Identifying spammers...")
-    spammers = []
-    for follower in followers:
-        try:
-            driver.get(follower)
-            time.sleep(10)
+def check_private_account(driver):
+    try:
+        driver.find_element(By.XPATH, "//h2[contains(text(), 'Account privato')]")
+        return True
+    except NoSuchElementException:
+        return False
 
-            is_private = False
-            try:
-                is_private = WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.XPATH, "//h2[text()='This Account is Private']"))
-                )
-            except TimeoutException:
-                pass
-            if is_private:
-                continue
+def get_bio(driver):
+    try:
+        return driver.find_element(By.XPATH, "//div[@class='-vDIg']//span").text
+    except:
+        return ""
 
-            # Check if the username appears to be a spammer
-            follower_username = follower.split("/")[-2]
-            if "bot" in follower_username.lower() or "spam" in follower_username.lower():
-                spammers.append(follower_username)
-                continue  # Skip detailed analysis for this follower
+def get_counts(driver):
+    try:
+        posts = int(driver.find_element(By.XPATH, "//span[contains(@class, 'g47SY')][1]").text.replace(',', ''))
+        followers = int(driver.find_element(By.XPATH, "//a[contains(@href, '/followers')]/span").text.replace(',', ''))
+        following = int(driver.find_element(By.XPATH, "//a[contains(@href, '/following')]/span").text.replace(',', ''))
+        return followers, following, posts
+    except:
+        return 0, 0, 0
 
-            # Perform detailed profile analysis to identify spammers
-            biography_elem = driver.find_element(By.XPATH, "//div[@class='-vDIg']//span")
-            biography = biography_elem.text if biography_elem else ""
-            if not biography:
-                continue
-
-            try:
-                followers_count = int(driver.find_element(By.XPATH, "//a[contains(@href,'/followers')]/span").text.replace(',', ''))
-                following_count = int(driver.find_element(By.XPATH, "//a[contains(@href,'/following')]/span").text.replace(',', ''))
-            except Exception:
-                followers_count, following_count = 0, 0
-
-            if followers_count < 100 or following_count > 1000:
-                spammers.append(follower_username)
-
-            try:
-                story_count = int(driver.find_element(By.XPATH, "//div[@class='ySN3v']//div[contains(@class,'eLAPa')]").text)
-                if story_count == 0 or story_count > 100:
-                    spammers.append(follower_username)
-            except Exception:
-                pass
-
-        except Exception as e:
-            print(f"Error analyzing profile {follower}: {str(e)}")
-            continue
-
-    return spammers
-
-# Log in to Instagram via Selenium
-driver = webdriver.Chrome(options=options)
-
-try:
-    if login_to_instagram(driver, username, password):
-        # Navigate to profile and click on followers
-        go_to_profile(driver, username)
-        click_on_followers(driver)
-
-        # Scroll to load all followers and extract their links
-        scroll_to_load_followers(driver)
-        followers = extract_followers_links(driver)
-
-        # Identify spammers
-        spammers = identify_spammers(driver, followers)
-
-        # Print the list of identified bot spammers
-        print("Identified bot spammers:")
-        if spammers:
-            for spammer in spammers:
-                print(spammer)
-        else:
-            print("No bot spammers identified.")
-
-finally:
-    # Close the Selenium driver at the end of the execution
-    driver.quit()
+# MAIN
+if __name__ == "__main__":
+    driver = setup_driver(proxy=os.getenv('PROXY'))  # Opzionale: aggiungi proxy
+    try:
+        if not login_to_instagram(driver):
+            raise Exception("Login fallito")
+            
+        # Apri lista follower (modifica con il tuo username)
+        driver.get(f"https://www.instagram.com/{username}/followers/")
+        scroll_followers_list(driver)
+        
+        # Estrai tutti i profili
+        followers = [elem.get_attribute('href') for elem in 
+                    driver.find_elements(By.XPATH, "//a[@class='FPmhX notranslate _0imsa ']")]
+        
+        # Analizza ogni profilo
+        spammers = []
+        for i, follower in enumerate(followers):
+            if i % 10 == 0:  # Limita le richieste per evitare blocchi
+                time.sleep(random.uniform(60, 120))
+                
+            spammer = analyze_profile(driver, follower)
+            if spammer:
+                spammers.append(spammer)
+                logging.warning(f"Bot rilevato: {spammer}")
+        
+        print(f"Bot rilevati ({len(spammers)}):")
+        print("\n".join(spammers))
+                
+    except Exception as e:
+        logging.critical(f"Errore critico: {str(e)}")
+    finally:
+        driver.quit()
